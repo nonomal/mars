@@ -1,12 +1,23 @@
-import React, { Suspense, lazy } from "react";
-import ReactDOM from "react-dom";
-import "./styles/index.less";
-import reportWebVitals from "./reportWebVitals";
+import React, { Suspense, lazy, useEffect } from "react";
 import { Provider } from "react-redux";
 import store from "./store";
 import { disableReactDevTools } from "@fvilers/disable-react-devtools";
-import { BrowserRouter as Router, Switch } from "react-router-dom";
-import { PrivateRoute, GuestRoute, ProvideAuth } from "./contexts/auth";
+import {
+  Route,
+  BrowserRouter as Router,
+  Routes,
+  useLocation,
+} from "react-router-dom";
+import { GuestRoute, PrivateRoute, ProvideAuth } from "./contexts/auth";
+import { createRoot } from "react-dom/client";
+import { ConfigProvider } from "antd";
+import theme from "./styles/theme";
+import "./styles/index.css";
+import "antd/dist/reset.css";
+import "prism-themes/themes/prism-material-dark.css";
+import { useDispatch } from "react-redux";
+import { setOpenedModals } from "./store/actions";
+import zhCN from "antd/locale/zh_CN";
 
 const Login = lazy(() => import("./components/Login"));
 const Callback = lazy(() => import("./components/AuthCallback"));
@@ -16,29 +27,59 @@ if (process.env.NODE_ENV === "production") {
   disableReactDevTools();
 }
 
-ReactDOM.render(
-  <React.StrictMode>
-    <Provider store={store}>
-      <Suspense fallback={null}>
-        <Router>
-          <ProvideAuth>
-            <Switch>
-              <GuestRoute path="/auth/callback">
+const container = document.getElementById("root");
+const root = createRoot(container!);
+
+const RootElement: React.FC = () => {
+  const lo = useLocation();
+  const dispath = useDispatch();
+
+  useEffect(() => {
+    if (lo.pathname !== "/") {
+      dispath(setOpenedModals({}));
+    }
+  }, [lo, dispath]);
+
+  return (
+    <ProvideAuth>
+      <ConfigProvider theme={{ token: theme }} locale={zhCN}>
+        <Routes>
+          <Route
+            path="/auth/callback"
+            element={
+              <GuestRoute>
                 <Callback />
               </GuestRoute>
-              <GuestRoute path="/login">
+            }
+          />
+          <Route
+            path="/login"
+            element={
+              <GuestRoute>
                 <Login />
               </GuestRoute>
-              <PrivateRoute path="/">
+            }
+          />
+          <Route
+            path="/*"
+            element={
+              <PrivateRoute>
                 <App />
               </PrivateRoute>
-            </Switch>
-          </ProvideAuth>
-        </Router>
-      </Suspense>
-    </Provider>
-  </React.StrictMode>,
-  document.getElementById("root")
-);
+            }
+          />
+        </Routes>
+      </ConfigProvider>
+    </ProvideAuth>
+  );
+};
 
-reportWebVitals();
+root.render(
+  <Provider store={store}>
+    <Suspense fallback={null}>
+      <Router>
+        <RootElement />
+      </Router>
+    </Suspense>
+  </Provider>,
+);

@@ -1,80 +1,121 @@
-import React, {
-  useState,
-  useCallback,
-  useEffect,
-  memo,
-  lazy,
-  Suspense,
-} from "react";
+import React, { useState, useCallback, useEffect, memo, Suspense } from "react";
 import { DraggableModal } from "../pkg/DraggableModal";
-import { detailProject } from "../api/project";
-import { Button, Tabs, Skeleton, Badge } from "antd";
+import { css } from "@emotion/css";
+import theme from "../styles/theme";
+import { Button, Tabs, Skeleton, Badge, Spin, Space } from "antd";
 import DeployStatus from "./DeployStatus";
-import { setNamespaceReload } from "../store/actions";
+import { setNamespaceReload, setOpenedModals } from "../store/actions";
 import ErrorBoundary from "./ErrorBoundary";
 import ServiceEndpoint from "./ServiceEndpoint";
 import { useDispatch } from "react-redux";
-import pb from "../api/compiled";
-
+import TabInfo from "./TabInfo";
+import TabEdit from "./TabEdit";
+import Shell from "./TabShell";
 import TabLog from "./TabLog";
-const TabInfo = lazy(() => import("./TabInfo"));
-const TabEdit = lazy(() => import("./TabEdit"));
-const Shell = lazy(() => import("./TabShell"));
-
-const { TabPane } = Tabs;
+import useProjectRoom from "../contexts/useProjectRoom";
+import { useWs } from "../contexts/useWebsocket";
+import { Tab } from "rc-tabs/lib/interface";
+import { useSelector } from "react-redux";
+import { modals } from "../store/reducers/openedModal";
+import { useSearchParams } from "react-router-dom";
+import { sortedUniq } from "lodash";
+import { TypesProjectModelDeployStatus, components } from "../api/schema.d";
+import ajax from "../api/ajax";
+import CpuMemory from "./CpuMemory";
 
 const ItemDetailModal: React.FC<{
-  item: pb.types.ProjectModel;
+  item: components["schemas"]["types.ProjectModel"];
   namespace: string;
   namespaceId: number;
 }> = ({ item, namespace, namespaceId }) => {
   const dispatch = useDispatch();
-  const [visible, setVisible] = useState(false);
-  const onOk = useCallback(() => setVisible(true), []);
-  const [detail, setDetail] = useState<pb.project.ShowResponse | undefined>();
+  const openModals = useSelector(modals);
+  const [visible, setVisible] = useState(openModals[item.id] || false);
+  const [params, setParams] = useSearchParams();
+  const onOpenModal = useCallback(() => {
+    let pIDs = (params.get("pid") || "").split(",");
+    pIDs.push(String(item.id));
+    setParams({ pid: sortedUniq(pIDs).join(",") });
+    setVisible(true);
+  }, [item.id, setParams, params]);
+  const onCloseModal = useCallback(() => {
+    setVisible(false);
+    let pidStr = sortedUniq(
+      (params.get("pid") || "").split(",").filter((v) => v !== String(item.id)),
+    ).join(",");
+    setParams(!!pidStr ? { pid: pidStr } : {});
+    dispatch(setOpenedModals({ [item.id]: false }));
+  }, [item.id, setParams, params, dispatch]);
+
+  const [detail, setDetail] = useState<
+    components["schemas"]["project.ShowResponse"] | undefined
+  >();
   const [resizeAt, setResizeAt] = useState<number>(0);
 
   useEffect(() => {
     if (visible && namespaceId && item.id) {
-      detailProject(item.id).then((res) => {
-        setDetail(res.data);
-      });
+      ajax
+        .GET("/api/projects/{id}", { params: { path: { id: item.id } } })
+        .then(({ data, error }) => {
+          if (error) {
+            return;
+          }
+          setDetail(data);
+        });
     }
   }, [item.id, visible, namespaceId]);
 
-  const onSuccess = useCallback(() => {
-    item.id && detailProject(item.id).then((res) => {
-      setDetail(res.data);
-    });
-  }, [item.id]);
+  const onDelete = useCallback(() => {
+    dispatch(setNamespaceReload(true, namespaceId));
+    onCloseModal();
+  }, [dispatch, namespaceId, onCloseModal]);
 
-  const onCancel = useCallback(() => {
-    setVisible(false);
-  }, []);
+  const onSuccess = useCallback(() => {
+    item.id &&
+      ajax
+        .GET("/api/projects/{id}", { params: { path: { id: item.id } } })
+        .then(({ data, error }) => {
+          if (error) {
+            return;
+          }
+          setDetail(data);
+        });
+  }, [item.id]);
 
   return (
     <div className="project-detail">
       <Button
         onClick={() => {
-          onOk();
+          onOpenModal();
         }}
-        className="project-detail__show-button"
+        className={css`
+          width: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        `}
         type="dashed"
       >
-        <DeployStatus status={item.deploy_status} />
+        <DeployStatus status={item.deployStatus} />
         <span
           title={item.name}
           style={{
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
             overflow: "hidden",
-            marginRight: 5,
           }}
         >
           {item.name}
         </span>
-        {item.deploy_status === pb.types.Deploy.StatusDeployed && (
-          <ServiceEndpoint projectId={item.id} />
+        {item.deployStatus === TypesProjectModelDeployStatus.StatusDeployed && (
+          <Space size={"small"}>
+            <ServiceEndpoint projectId={item.id} />
+            <CpuMemory
+              namespaceID={namespaceId}
+              projectID={item.id}
+              title="项目资源使用量"
+            />
+          </Space>
         )}
       </Button>
       <DraggableModal
@@ -82,15 +123,22 @@ const ItemDetailModal: React.FC<{
           setResizeAt(new Date().getTime());
         }}
         className="draggable-modal"
-        visible={visible}
+        destroyOnClose
+        open={visible}
         initialWidth={900}
         initialHeight={600}
         footer={null}
         keyboard={false}
-        onCancel={onCancel}
+        onCancel={onCloseModal}
         title={
           <Badge.Ribbon
-            className="project-detail__badge"
+            className={css`
+              top: 0;
+              color: ${theme.mainColor};
+              cursor: auto;
+              font-family: '"Fira code", "Fira Mono", monospace';
+              margin-left: -16px;
+            `}
             placement="start"
             text={namespace}
           >
@@ -98,78 +146,131 @@ const ItemDetailModal: React.FC<{
           </Badge.Ribbon>
         }
       >
-        <Tabs
-          destroyInactiveTabPane
-          defaultActiveKey="1"
-          centered
-          style={{ height: "100%" }}
-        >
-          {(item.deploy_status === pb.types.Deploy.StatusDeployed || item.deploy_status === pb.types.Deploy.StatusDeploying) && (
-            <>
-              <TabPane tab="容器日志" key="container-logs">
-                {detail?.project && detail.project.namespace ? (
-                  <TabLog
-                    updatedAt={detail.project.updated_at}
-                    id={detail.project.id}
-                    namespace={detail.project.namespace.name}
-                  />
-                ) : (
-                  <Skeleton active />
-                )}
-              </TabPane>
-              <TabPane tab="命令行" key="shell" style={{ height: "100%" }}>
-                <Suspense fallback={<Skeleton active />}>
-                  <ErrorBoundary>
-                    {detail?.project && detail.project.namespace && (
-                      <Shell
-                        namespace={detail.project.namespace.name}
-                        id={detail.project.id}
-                        updatedAt={detail.project.updated_at}
-                        resizeAt={resizeAt}
-                      />
-                    )}
-                  </ErrorBoundary>
-                </Suspense>
-              </TabPane>
-              <TabPane tab="配置更新" key="update-config">
-                <Suspense fallback={<Skeleton active />}>
-                  {detail?.project && detail.project.namespace && (
-                    <TabEdit
-                      elements={detail.elements}
-                      namespaceId={detail.project.namespace.id}
-                      detail={detail.project}
-                      updatedAt={detail.project.updated_at}
-                      onSuccess={onSuccess}
-                    />
-                  )}
-                </Suspense>
-              </TabPane>
-            </>
-          )}
-          <TabPane tab="详细信息" key="detail" className="detail-tab">
-            <Suspense fallback={<Skeleton active />}>
-              {detail?.project && (
-                <TabInfo
-                  detail={detail.project}
-                  cpu={detail.cpu}
-                  memory={detail.memory}
-                  git_commit_web_url={detail.project.git_commit_web_url}
-                  git_commit_title={detail.project.git_commit_title}
-                  git_commit_author={detail.project.git_commit_author}
-                  git_commit_date={detail.project.git_commit_date}
-                  urls={detail.urls}
-                  onDeleted={() => {
-                    dispatch(setNamespaceReload(true));
-                    setVisible(false);
-                  }}
-                />
-              )}
-            </Suspense>
-          </TabPane>
-        </Tabs>
+        {detail && detail.item ? (
+          <MyTabs
+            namespaceId={namespaceId}
+            projectID={detail.item.id}
+            detail={detail}
+            onDelete={onDelete}
+            onSuccess={onSuccess}
+            item={item}
+            resizeAt={resizeAt}
+          />
+        ) : (
+          <div
+            style={{
+              display: "flex",
+              height: "100%",
+              justifyContent: "center",
+              alignItems: "center",
+            }}
+          >
+            <Spin spinning={true} size="large" />
+          </div>
+        )}
       </DraggableModal>
     </div>
   );
 };
+
+const MyTabs: React.FC<{
+  detail: components["schemas"]["project.ShowResponse"];
+  item: components["schemas"]["types.ProjectModel"];
+  resizeAt: any;
+  onSuccess: () => void;
+  onDelete: () => void;
+  projectID: number;
+  namespaceId: number;
+}> = memo(
+  ({ detail, item, namespaceId, projectID, resizeAt, onSuccess, onDelete }) => {
+    console.log("render MyTabs");
+    let items: Tab[] = [
+      {
+        key: "container-logs",
+        label: "容器日志",
+        destroyInactiveTabPane: true,
+        children: (
+          <>
+            {detail?.item && detail.item.namespace ? (
+              <TabLog
+                id={detail.item.id}
+                namespace={detail.item.namespace.name}
+              />
+            ) : (
+              <Skeleton active />
+            )}
+          </>
+        ),
+      },
+      {
+        key: "shell",
+        label: "命令行",
+        destroyInactiveTabPane: true,
+        children: (
+          <div style={{ height: "100%" }}>
+            <Suspense fallback={<Skeleton active />}>
+              <ErrorBoundary>
+                {detail?.item && detail.item.namespace && (
+                  <Shell
+                    namespaceID={detail.item.namespace.id}
+                    namespace={detail.item.namespace.name}
+                    id={detail.item.id}
+                    resizeAt={resizeAt}
+                  />
+                )}
+              </ErrorBoundary>
+            </Suspense>
+          </div>
+        ),
+      },
+      {
+        key: "update-config",
+        label: "配置更新",
+        children: (
+          <>
+            <Suspense fallback={<Skeleton active />}>
+              {detail?.item && detail.item.namespace && (
+                <TabEdit
+                  namespaceId={detail.item.namespace.id}
+                  detail={detail.item}
+                  onSuccess={onSuccess}
+                />
+              )}
+            </Suspense>
+          </>
+        ),
+      },
+    ];
+    items = [
+      ...(item.deployStatus === TypesProjectModelDeployStatus.StatusDeployed ||
+      item.deployStatus === TypesProjectModelDeployStatus.StatusDeploying
+        ? items
+        : []),
+      {
+        key: "detail",
+        label: "详细信息",
+        destroyInactiveTabPane: true,
+        children: (
+          <div className="detail-tab">
+            <Suspense fallback={<Skeleton active />}>
+              {detail?.item && (
+                <TabInfo detail={detail.item} onDeleted={onDelete} />
+              )}
+            </Suspense>
+          </div>
+        ),
+      },
+    ];
+    useProjectRoom(namespaceId, projectID, useWs());
+    return (
+      <Tabs
+        defaultActiveKey="1"
+        centered
+        items={items}
+        style={{ height: "100%" }}
+      />
+    );
+  },
+);
 
 export default memo(ItemDetailModal);

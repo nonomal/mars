@@ -1,25 +1,25 @@
 import React, { useEffect, createContext, useState, useContext } from "react";
-import { Route, Redirect, useHistory } from "react-router-dom";
+import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { message } from "antd";
-import { login, info } from "../api/auth";
 import { setToken, getToken, removeToken } from "../utils/token";
-import pb from "../api/compiled";
+import ajax from "../api/ajax";
 
 export const authContext = createContext<any>(null);
 
 const realAuth = {
   async signin(username: string, password: string) {
-    return login({ username, password }).then((res) => {
-      setToken(res.data.token);
-      return this.info();
-    });
+    return ajax
+      .POST("/api/auth/login", { body: { username, password } })
+      .then(({ data }) => {
+        data && setToken(data.token);
+        return this.info();
+      });
   },
   async signout() {
     removeToken();
   },
   async info() {
-    console.log(getToken());
-    return info();
+    return ajax.GET("/api/auth/info");
   },
 };
 
@@ -28,10 +28,19 @@ function ProvideAuth({ children }: { children: any }) {
   return <authContext.Provider value={auth}>{children}</authContext.Provider>;
 }
 
+export interface userInfo {
+  id: number;
+  avatar: string;
+  name: string;
+  email: string;
+  logoutUrl: string;
+  roles: string[];
+}
+
 function useAuth(): {
   login: (username: string, password: string, cb: () => void) => {};
-  user: pb.auth.InfoResponse;
-  setUser: (u: pb.auth.InfoResponse) => void;
+  user: userInfo;
+  setUser: (u: userInfo) => void;
   logout: (cb: () => void) => {};
   isAdmin: () => boolean;
 } {
@@ -39,34 +48,33 @@ function useAuth(): {
 }
 
 function useProvideAuth() {
-  const [user, setUser] = useState<pb.auth.InfoResponse>();
+  const [user, setUser] = useState<userInfo>();
 
-  const h = useHistory();
+  const h = useNavigate();
   useEffect(() => {
     if (getToken() && !user) {
-      info()
-        .then((res) => {
-          setUser(res.data);
-        })
-        .catch((e) => {
+      ajax.GET("/api/auth/info").then(({ data, error }) => {
+        if (error) {
           removeToken();
-          h.push("/login");
-        });
+          h("/login");
+          return;
+        }
+        setUser(data);
+      });
     }
   }, [user, h]);
 
   const signin = (username: string, password: string, cb: any) => {
-    realAuth
-      .signin(username, password)
-      .then((res) => {
-        setUser(res.data);
-        cb();
-        message.success("登录成功");
-      })
-      .catch((e) => {
-        console.log(e);
+    realAuth.signin(username, password).then(({ data, error }) => {
+      if (error) {
+        console.log(error);
         message.error("用户名或者密码不正确");
-      });
+        return;
+      }
+      setUser(data);
+      cb();
+      message.success("登录成功");
+    });
   };
 
   const signout = (cb: any) => {
@@ -78,7 +86,9 @@ function useProvideAuth() {
   };
 
   const isAdmin = () => {
-    return user ? user.roles.filter((item) => item === "admin").length > 0 : false;
+    return user
+      ? user.roles.filter((item) => item === "mars_admin").length > 0
+      : false;
   };
 
   return {
@@ -90,60 +100,22 @@ function useProvideAuth() {
   };
 }
 
-function PrivateRoute({
-  path,
-  exact,
-  children,
-  ...rest
-}: {
-  exact?: boolean;
-  path: string;
-  children: any;
-}) {
-  return (
-    <Route
-      {...rest}
-      exact={exact}
-      render={({ location }) =>
-        getToken() ? (
-          children
-        ) : (
-          <Redirect
-            to={{
-              pathname: "/login",
-              state: { from: location },
-            }}
-          />
-        )
-      }
-    />
-  );
+function PrivateRoute({ children }: { children: JSX.Element }) {
+  let location = useLocation();
+  if (!getToken()) {
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+
+  return children;
 }
-function GuestRoute({
-  path,
-  children,
-  ...rest
-}: {
-  path: string;
-  children: any;
-}) {
-  return (
-    <Route
-      {...rest}
-      render={({ location }) =>
-        !getToken() ? (
-          children
-        ) : (
-          <Redirect
-            to={{
-              pathname: "/",
-              state: { from: location },
-            }}
-          />
-        )
-      }
-    />
-  );
+
+function GuestRoute({ children }: { children: JSX.Element }) {
+  let location = useLocation();
+  if (!!getToken()) {
+    return <Navigate to="/" state={{ from: location }} />;
+  }
+
+  return children;
 }
 
 export { ProvideAuth, PrivateRoute, useAuth, useProvideAuth, GuestRoute };

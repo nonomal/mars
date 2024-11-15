@@ -4,7 +4,7 @@ import { handleEvents } from "../store/actions";
 import { getUid } from "../utils/uid";
 import { getToken } from "../utils/token";
 import { message } from "antd";
-import pb from "../api/compiled";
+import pb from "../api/websocket";
 
 interface State {
   ws: WebSocket | null;
@@ -32,7 +32,9 @@ export function useWsReady(): boolean {
   return false;
 }
 
-export const ProvideWebsocket: React.FC = ({ children }) => {
+export const ProvideWebsocket: React.FC<{ children: React.ReactNode }> = ({
+  children,
+}) => {
   const dispatch = useDispatch();
   const [ws, setWs] = useState<any>();
 
@@ -55,14 +57,14 @@ export const ProvideWebsocket: React.FC = ({ children }) => {
       url += "?uid=" + uid;
     }
     let conn = new WebSocket(url);
-    conn.binaryType = "arraybuffer"
+    conn.binaryType = "arraybuffer";
     conn.onopen = function (evt) {
       setWs({ ws: conn, ready: true });
       conn.send(
         pb.websocket.AuthorizeTokenInput.encode({
           token: getToken(),
           type: pb.websocket.Type.HandleAuthorize,
-        }).finish()
+        }).finish(),
       );
     };
     conn.onclose = function (evt) {
@@ -70,8 +72,14 @@ export const ProvideWebsocket: React.FC = ({ children }) => {
       console.log("ws closed");
     };
     conn.onmessage = function (evt) {
-      let data: pb.websocket.WsMetadataResponse = pb.websocket.WsMetadataResponse.decode(new Uint8Array(evt.data))
-      data.metadata && dispatch(handleEvents(data.metadata.slug, data.metadata, new Uint8Array(evt.data)));
+      let data: pb.websocket.WsMetadataResponse =
+        pb.websocket.WsMetadataResponse.decode(new Uint8Array(evt.data));
+      data.metadata &&
+        handleEvents(
+          data.metadata.slug,
+          data.metadata,
+          new Uint8Array(evt.data),
+        )(dispatch);
     };
   }, [dispatch]);
 

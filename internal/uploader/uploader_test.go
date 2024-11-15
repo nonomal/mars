@@ -3,32 +3,35 @@ package uploader
 import (
 	"testing"
 
+	"github.com/duc-cnzj/mars/v5/internal/config"
+	"github.com/duc-cnzj/mars/v5/internal/data"
+	"github.com/duc-cnzj/mars/v5/internal/mlog"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNewUploader(t *testing.T) {
-	uploader, err := NewUploader("/", "disk")
-	assert.Nil(t, err)
-	assert.Equal(t, "/", uploader.rootDir)
-	assert.Equal(t, "disk", uploader.disk)
+func TestNewUploader_WithValidConfig_ReturnsUploader(t *testing.T) {
+	cfg := &config.Config{}
+	logger := mlog.NewForConfig(cfg)
+	data := data.NewData(cfg, logger)
+
+	up, err := NewUploader(cfg, logger, data)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, up)
+
+	assert.Same(t, up, up.(*diskUploader).localUploader)
 }
 
-func TestFileInfo_Path(t *testing.T) {
-	uploader, _ := NewUploader("/", "disk")
-	assert.Equal(t, "/disk/aaa", uploader.getPath("aaa"))
-}
+func TestNewUploader_WithS3Enabled_ReturnsS3Uploader(t *testing.T) {
+	cfg := &config.Config{S3Enabled: true, S3Bucket: "test-bucket"}
+	logger := mlog.NewForConfig(cfg)
+	data := data.NewData(cfg, logger)
 
-func TestUploader_AbsolutePath(t *testing.T) {
-	uploader, _ := NewUploader("/", "disk")
-	assert.Equal(t, "/disk/aaa", uploader.AbsolutePath("aaa"))
-}
+	up, err := NewUploader(cfg, logger, data)
 
-func TestUploader_Disk(t *testing.T) {
-	uploader, _ := NewUploader("/", "disk")
-	assert.Equal(t, "/aa", uploader.Disk("aa").AbsolutePath("/"))
-}
+	assert.NoError(t, err)
+	assert.IsType(t, &s3Uploader{}, up)
 
-func TestUploader_root(t *testing.T) {
-	uploader, _ := NewUploader("/", "disk")
-	assert.Equal(t, "/disk", uploader.root())
+	assert.NotSame(t, up, up.(*s3Uploader).localUploader)
+	assert.IsType(t, &diskUploader{}, up.(*s3Uploader).localUploader)
 }

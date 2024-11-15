@@ -1,55 +1,69 @@
-import React, { memo, useEffect, useCallback, useState } from "react";
-import { Popover, Button, Collapse } from "antd";
-import { HistoryOutlined } from "@ant-design/icons";
-import ReactDiffViewer from "react-diff-viewer";
-import { getHighlightSyntax } from "../utils/highlight";
-import { changelogs } from "../api/changelog";
-import pb from "../api/compiled";
+import React, { memo, useState } from "react";
+import { Popover, Button, Collapse, Tooltip, Spin } from "antd";
+import { CloseOutlined, HistoryOutlined } from "@ant-design/icons";
+import DiffViewer from "./DiffViewer";
+import ajax from "../api/ajax";
+import { components } from "../api/schema";
 const { Panel } = Collapse;
 
 const ConfigHistory: React.FC<{
-  show: boolean;
   projectID: number;
   configType: string;
-  currentConfig: string;
-  onDataChange: (s: string) => void;
-  updatedAt: any;
-}> = ({
-  currentConfig,
-  projectID,
-  configType,
-  updatedAt,
-  onDataChange,
-  show,
-}) => {
+}> = ({ projectID, configType }) => {
+  const [list, setList] = useState<
+    components["schemas"]["types.ChangelogModel"][]
+  >([]);
+
+  const [loading, setLoading] = useState(false);
   const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    if (!show) {
-      setVisible(false);
-    }
-  }, [show]);
   return (
     <Popover
       placement="right"
-      visible={visible}
-      onVisibleChange={(v) => setVisible(v)}
+      open={visible}
+      destroyTooltipOnHide
+      onOpenChange={(v) => {
+        if (v) {
+          setLoading(true);
+          ajax
+            .POST("/api/changelogs/find_last_changelogs_by_project_id", {
+              body: {
+                projectId: projectID,
+                onlyChanged: true,
+              },
+            })
+            .then(({ data }) => {
+              data && setList(data.items);
+              setLoading(false);
+            });
+        }
+      }}
       content={
-        <Content
-          onDataChange={(s) => {
-            onDataChange(s);
-            setVisible(false);
-          }}
-          updatedAt={updatedAt}
-          projectID={projectID}
-          configType={configType}
-          currentConfig={currentConfig}
-        />
+        <Content loading={loading} list={list} configType={configType} />
       }
       trigger="click"
-      title="历史修改记录"
+      title={
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <span>历史修改记录</span>{" "}
+          <Button
+            size="small"
+            type="link"
+            onClick={() => setVisible(false)}
+            icon={<CloseOutlined />}
+          ></Button>
+        </div>
+      }
     >
       <Button
         size="small"
+        onClick={() => {
+          setVisible((v) => !v);
+        }}
         style={{ fontSize: 12 }}
         icon={<HistoryOutlined />}
       />
@@ -58,38 +72,10 @@ const ConfigHistory: React.FC<{
 };
 
 const Content: React.FC<{
-  projectID: number;
+  list: components["schemas"]["types.ChangelogModel"][];
   configType: string;
-  currentConfig: string;
-  updatedAt: any;
-  onDataChange: (s: string) => void;
-}> = ({ currentConfig, projectID, configType, updatedAt, onDataChange }) => {
-  const [list, setList] = useState<pb.types.ChangelogModel[]>();
-  const [initlist, setInitList] = useState<pb.types.ChangelogModel[]>();
-  const [data, setData] = useState("");
-  useEffect(() => {
-    changelogs({ project_id: projectID, only_changed: true }).then((res) => {
-      setList(res.data.items);
-      setInitList(res.data.items);
-    });
-  }, [projectID, updatedAt]);
-
-  useEffect(() => {
-    if (initlist) {
-      setList(initlist.filter((item) => item.config !== currentConfig));
-    }
-  }, [currentConfig, initlist]);
-
-  const highlightSyntax = useCallback(
-    (str: string) => (
-      <code
-        dangerouslySetInnerHTML={{
-          __html: getHighlightSyntax(str, configType),
-        }}
-      />
-    ),
-    [configType]
-  );
+  loading: boolean;
+}> = ({ configType, list, loading }) => {
   return (
     <div
       style={{
@@ -99,58 +85,87 @@ const Content: React.FC<{
         pointerEvents: "auto",
       }}
     >
-      <Collapse
-        accordion
-        onChange={(k) => {
-          let l = list?.find((item) => item.version === Number(k));
-          l && setData(l.config);
-        }}
-      >
-        {list?.map((item) => (
-          <Panel
-            key={item.version}
-            header={
-              <>
-                {item.username}: [{item.date}]: version {item.version}
-              </>
-            }
-          >
-            <div>
-              <ReactDiffViewer
-                disableWordDiff
-                styles={{
-                  line: { fontSize: 12 },
-                  gutter: { padding: "0 5px", minWidth: 20 },
-                  marker: { padding: "0 6px" },
-                  diffContainer: {
-                    display: "block",
-                    width: "100%",
-                    overflowX: "auto",
-                  },
-                }}
-                useDarkTheme
-                renderContent={highlightSyntax}
-                showDiffOnly
-                oldValue={currentConfig}
-                newValue={data}
-                splitView={false}
-              />
-              <div style={{ display: "flex", flexDirection: "row-reverse" }}>
-                <Button
-                  onClick={() => {
-                    onDataChange(data);
-                    setData(data);
-                  }}
-                  size="small"
-                  type="dashed"
-                  style={{ marginTop: 3 }}
-                >
-                  使用这个配置
-                </Button>
+      <Collapse accordion bordered={false}>
+        {!loading ? (
+          list.map((item, idx) => (
+            <Panel
+              key={item.version}
+              header={
+                <>
+                  <div style={{ display: "flex", alignItems: "center" }}>
+                    <div style={{ flexShrink: 0 }}>
+                      <span style={{ color: "red", margin: "0 5px" }}>
+                        {item.username}
+                      </span>{" "}
+                      于{" "}
+                      <strong style={{ margin: "0 5px" }}>{item.date}</strong>{" "}
+                      更新了项目
+                    </div>
+
+                    <div
+                      style={{
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        marginLeft: 5,
+                        flexShrink: 1,
+                      }}
+                    >
+                      <Tooltip
+                        placement="top"
+                        title={
+                          <div style={{ fontSize: 12 }}>
+                            {item.gitCommitAuthor} 提交于
+                            {item.gitCommitDate}
+                          </div>
+                        }
+                      >
+                        <a href={item.gitCommitWebUrl} target="_blank">
+                          {item.gitCommitTitle}
+                        </a>
+                      </Tooltip>
+                    </div>
+                  </div>
+                </>
+              }
+            >
+              <div style={{ marginTop: 5 }}>
+                <div>
+                  <DiffViewer
+                    mode={configType}
+                    styles={{
+                      line: { fontSize: 12 },
+                      gutter: { padding: "0 5px", minWidth: 20 },
+                      marker: { padding: "0 6px" },
+                      diffContainer: {
+                        display: "block",
+                        width: "100%",
+                        overflowX: "auto",
+                      },
+                    }}
+                    showDiffOnly
+                    oldValue={
+                      list && idx + 1 < list.length ? list[idx + 1].config : ""
+                    }
+                    newValue={item.config}
+                    splitView={false}
+                  />
+                </div>
               </div>
-            </div>
-          </Panel>
-        ))}
+            </Panel>
+          ))
+        ) : (
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center",
+              padding: "5px 0",
+            }}
+          >
+            <Spin />
+          </div>
+        )}
       </Collapse>
     </div>
   );

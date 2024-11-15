@@ -1,152 +1,34 @@
 package socket
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"sync"
 	"time"
 
+	"github.com/duc-cnzj/mars/api/v5/types"
+	websocket_pb "github.com/duc-cnzj/mars/api/v5/websocket"
+	"github.com/duc-cnzj/mars/v5/internal/application"
+	"github.com/duc-cnzj/mars/v5/internal/auth"
+	"github.com/duc-cnzj/mars/v5/internal/data"
+	"github.com/duc-cnzj/mars/v5/internal/locker"
+	"github.com/duc-cnzj/mars/v5/internal/metrics"
+	"github.com/duc-cnzj/mars/v5/internal/mlog"
+	"github.com/duc-cnzj/mars/v5/internal/repo"
+	"github.com/duc-cnzj/mars/v5/internal/transformer"
+	"github.com/duc-cnzj/mars/v5/internal/uploader"
+	"github.com/duc-cnzj/mars/v5/internal/util/counter"
+	"github.com/duc-cnzj/mars/v5/internal/util/hash"
+	"github.com/duc-cnzj/mars/v5/internal/util/timer"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/samber/lo"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/proto"
-
-	"github.com/duc-cnzj/mars-client/v4/cluster"
-	"github.com/duc-cnzj/mars-client/v4/types"
-	websocket_pb "github.com/duc-cnzj/mars-client/v4/websocket"
-	app "github.com/duc-cnzj/mars/internal/app/helper"
-	"github.com/duc-cnzj/mars/internal/contracts"
-	"github.com/duc-cnzj/mars/internal/mlog"
-	"github.com/duc-cnzj/mars/internal/models"
-	"github.com/duc-cnzj/mars/internal/plugins"
-	"github.com/duc-cnzj/mars/internal/utils"
 )
-
-type HandleRequestFunc func(c *WsConn, t websocket_pb.Type, message []byte)
-
-var handlers map[websocket_pb.Type]HandleRequestFunc = map[websocket_pb.Type]HandleRequestFunc{
-	WsAuthorize:          HandleWsAuthorize,
-	WsHandleCloseShell:   HandleWsHandleCloseShell,
-	WsHandleExecShellMsg: HandleWsHandleExecShellMsg,
-	WsHandleExecShell:    HandleWsHandleExecShell,
-	WsCancel:             HandleWsCancel,
-	WsCreateProject:      HandleWsCreateProject,
-	WsUpdateProject:      HandleWsUpdateProject,
-}
-
-type WsConn struct {
-	id   string
-	uid  string
-	conn *websocket.Conn
-
-	userMu           sync.RWMutex
-	user             contracts.UserInfo
-	pubSub           plugins.PubSub
-	cancelSignaler   CancelSignaler
-	terminalSessions SessionMapper
-}
-
-func (wc *WebsocketManager) initConn(r *http.Request, c *websocket.Conn) *WsConn {
-	var uid string
-	uid = r.URL.Query().Get("uid")
-	if uid == "" {
-		uid = uuid.New().String()
-	}
-	id := uuid.New().String()
-
-	ps := plugins.GetWsSender().New(uid, id)
-	var wsconn = &WsConn{
-		pubSub:         ps,
-		id:             id,
-		uid:            uid,
-		conn:           c,
-		cancelSignaler: &CancelSignals{cs: map[string]func(error){}},
-	}
-	wsconn.terminalSessions = &SessionMap{Sessions: make(map[string]*MyPtyHandler), conn: wsconn}
-	app.Metrics().IncWebsocketConn()
-	Wait.Inc()
-
-	return wsconn
-}
-
-func (c *WsConn) Shutdown() {
-	mlog.Debug("[Websocket]: Ws exit ")
-
-	c.cancelSignaler.CancelAll()
-	c.terminalSessions.CloseAll()
-	c.pubSub.Close()
-	c.conn.Close()
-	app.Metrics().DecWebsocketConn()
-	Wait.Dec()
-}
-
-func (c *WsConn) SetUser(info contracts.UserInfo) {
-	c.userMu.Lock()
-	defer c.userMu.Unlock()
-	c.user = info
-}
-
-func (c *WsConn) GetUser() contracts.UserInfo {
-	c.userMu.RLock()
-	defer c.userMu.RUnlock()
-	return c.user
-}
-
-func (c *WsConn) GetShellChannel(sessionID string) (chan *websocket_pb.TerminalMessage, error) {
-	if handler, ok := c.terminalSessions.Get(sessionID); ok {
-		return handler.shellCh, nil
-	}
-
-	return nil, fmt.Errorf("%v not found channel", sessionID)
-}
-
-type WebsocketManager struct{}
-
-func NewWebsocketManager() *WebsocketManager {
-	return &WebsocketManager{}
-}
-
-func (*WebsocketManager) TickClusterHealth() {
-	go func() {
-		defer utils.HandlePanic("TickClusterHealth")
-		ticker := time.NewTicker(15 * time.Second)
-		sub := plugins.GetWsSender().New("", "")
-		for {
-			select {
-			case <-ticker.C:
-				info := utils.ClusterInfo()
-				sub.ToAll(&websocket_pb.WsHandleClusterResponse{
-					Metadata: &websocket_pb.Metadata{
-						Type: WsClusterInfoSync,
-					},
-					Info: &cluster.InfoResponse{
-						Status:            info.Status,
-						FreeMemory:        info.FreeMemory,
-						FreeCpu:           info.FreeCpu,
-						FreeRequestMemory: info.FreeRequestMemory,
-						FreeRequestCpu:    info.FreeRequestCpu,
-						TotalMemory:       info.TotalMemory,
-						TotalCpu:          info.TotalCpu,
-						UsageMemoryRate:   info.UsageMemoryRate,
-						UsageCpuRate:      info.UsageCpuRate,
-						RequestMemoryRate: info.RequestMemoryRate,
-						RequestCpuRate:    info.RequestCpuRate,
-					},
-				})
-			case <-app.App().Done():
-				mlog.Info("[Websocket]: app shutdown and stop WsClusterInfoSync")
-				ticker.Stop()
-				return
-			}
-		}
-	}()
-}
-
-func (wc *WebsocketManager) Info(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Content-Type", "application/json")
-	marshal, _ := json.Marshal(plugins.GetWsSender().New("", "").Info())
-	writer.Write(marshal)
-}
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
@@ -154,92 +36,197 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-func (wc *WebsocketManager) Ws(w http.ResponseWriter, r *http.Request) {
-	c, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		mlog.Error(err)
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("cant Upgrade websocket connection"))
-		return
-	}
+var _ application.WsHttpServer = (*WebsocketManager)(nil)
 
-	wsconn := wc.initConn(r, c)
+type HandleRequestFunc func(ctx context.Context, c Conn, t websocket_pb.Type, message []byte)
 
-	defer wsconn.Shutdown()
+type WebsocketManager struct {
+	healthTickDuration time.Duration
 
-	go write(wsconn)
+	timer      timer.Timer
+	data       data.Data
+	logger     mlog.Logger
+	pl         application.PluginManger
+	auth       auth.Auth
+	uploader   uploader.Uploader
+	locker     locker.Locker
+	jobManager JobManager
 
-	NewMessageSender(wsconn, "", WsSetUid).SendMsg(wsconn.uid)
+	projRepo  repo.ProjectRepo
+	k8sRepo   repo.K8sRepo
+	fileRepo  repo.FileRepo
+	nsRepo    repo.NamespaceRepo
+	eventRepo repo.EventRepo
+	repoRepo  repo.RepoRepo
 
-	ch := make(chan struct{}, 1)
-	go func() {
-		var err error
-		defer func() {
-			mlog.Debugf("[Websocket]: go read exit, err: %v", err)
-		}()
-		defer utils.HandlePanic("[Websocket]: read recovery")
-		err = read(wsconn)
-		ch <- struct{}{}
-	}()
+	executor repo.ExecutorManager
 
-	select {
-	case <-app.App().Done():
-		return
-	case <-ch:
-		return
-	}
+	counter counter.Counter
+
+	handlers map[websocket_pb.Type]HandleRequestFunc
 }
 
-func write(wsconn *WsConn) error {
-	defer utils.HandlePanic("Websocket: Write")
+func NewWebsocketManager(
+	timer timer.Timer,
+	logger mlog.Logger,
+	counter counter.Counter,
+	projRepo repo.ProjectRepo,
+	repoRepo repo.RepoRepo,
+	nsRepo repo.NamespaceRepo,
+	jobManager JobManager,
+	data data.Data,
+	pl application.PluginManger,
+	auth auth.Auth,
+	uploader uploader.Uploader,
+	locker locker.Locker,
+	clusterRepo repo.K8sRepo,
+	eventRepo repo.EventRepo,
+	executor repo.ExecutorManager,
+	fileRepo repo.FileRepo,
+) application.WsHttpServer {
+	mgr := &WebsocketManager{
+		timer:              timer,
+		projRepo:           projRepo,
+		nsRepo:             nsRepo,
+		counter:            counter,
+		repoRepo:           repoRepo,
+		jobManager:         jobManager,
+		fileRepo:           fileRepo,
+		healthTickDuration: 15 * time.Second,
+		logger:             logger.WithModule("socket/websocket"),
+		pl:                 pl,
+		auth:               auth,
+		uploader:           uploader,
+		locker:             locker,
+		k8sRepo:            clusterRepo,
+		eventRepo:          eventRepo,
+		executor:           executor,
+		data:               data,
+	}
+	mgr.handlers = map[websocket_pb.Type]HandleRequestFunc{
+		WsAuthorize:          mgr.HandleAuthorize,
+		WsHandleExecShell:    mgr.HandleStartShell,
+		WsHandleExecShellMsg: mgr.HandleShellMessage,
+		WsHandleCloseShell:   mgr.HandleCloseShell,
+		WsCancel:             mgr.HandleWsCancelDeploy,
+		ProjectPodEvent:      mgr.HandleJoinRoom,
+		WsCreateProject:      mgr.HandleWsCreateProject,
+		WsUpdateProject:      mgr.HandleWsUpdateProject,
+	}
+	return mgr
+}
 
-	ticker := time.NewTicker(pingPeriod)
-	defer func() {
-		mlog.Debugf("[Websocket]: go write exit")
-		ticker.Stop()
-		wsconn.conn.Close()
-	}()
-	ch := wsconn.pubSub.Subscribe()
+func (wc *WebsocketManager) TickClusterHealth(done <-chan struct{}) {
+	ticker := time.NewTicker(wc.healthTickDuration)
+	lock := wc.locker
+	sub := wc.pl.Ws().New("", "")
+	defer sub.Close()
+
+	defer wc.logger.HandlePanic("TickClusterHealth")
+	defer ticker.Stop()
 	for {
 		select {
-		case message, ok := <-ch:
-			wsconn.conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if !ok {
-				return wsconn.conn.WriteMessage(websocket.CloseMessage, []byte{})
-			}
-
-			w, err := wsconn.conn.NextWriter(websocket.BinaryMessage)
-			if err != nil {
-				return err
-			}
-			w.Write(message)
-
-			if err := w.Close(); err != nil {
-				return err
-			}
 		case <-ticker.C:
-			mlog.Debugf("[Websocket]: tick ping/pong uid: %s, id: %s", wsconn.uid, wsconn.id)
-			wsconn.conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := wsconn.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				return err
+			if lock.Acquire("TickClusterHealth", 5) {
+				func() {
+					defer lock.Release("TickClusterHealth")
+					info := wc.k8sRepo.ClusterInfo()
+					sub.ToAll(&websocket_pb.WsHandleClusterResponse{
+						Metadata: &websocket_pb.Metadata{
+							Type: WsClusterInfoSync,
+						},
+						Info: transformer.FromClusterInfo(info),
+					})
+				}()
 			}
+		case <-done:
+			wc.logger.Info("[Websocket]: app shutdown and stop WsClusterInfoSync")
+			return
 		}
 	}
 }
 
-func read(wsconn *WsConn) error {
-	wsconn.conn.SetReadLimit(maxMessageSize)
-	wsconn.conn.SetReadDeadline(time.Now().Add(pongWait))
-	wsconn.conn.SetPongHandler(func(string) error {
-		wsconn.conn.SetReadDeadline(time.Now().Add(pongWait))
-		mlog.Debugf("[Websocket]: 收到心跳 id: %s, uid %s", wsconn.id, wsconn.uid)
+func (wc *WebsocketManager) Info(writer http.ResponseWriter, request *http.Request) {
+	sub := wc.pl.Ws().New("", "")
+	defer sub.Close()
+	marshal, _ := json.Marshal(sub.Info())
+	writer.Header().Set("Content-Type", "application/json")
+	writer.Write(marshal)
+}
+
+func (wc *WebsocketManager) Serve(w http.ResponseWriter, r *http.Request) {
+	c, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		wc.logger.Error(err)
+		return
+	}
+
+	var (
+		id  string = uuid.New().String()
+		uid string = uuid.New().String()
+
+		inputUid = r.URL.Query().Get("uid")
+	)
+	if inputUid != "" {
+		uid = inputUid
+	}
+
+	wsConn := wc.newWsConn(uid, id, c, NewTaskManager(wc.logger), NewSessionMap(wc.logger))
+	g, ctx := errgroup.WithContext(r.Context())
+
+	defer func() {
+		wc.logger.Debugf("[Websocket]: Serve exit")
+		wsConn.CloseAndClean(r.Context())
+		wc.counter.Dec()
+	}()
+
+	g.Go(func() error {
+		defer wc.logger.HandlePanic("[ProjectPodEventSubscriber]: Run")
+		return wsConn.PubSub().Run(ctx)
+	})
+
+	g.Go(func() error {
+		var err error
+		defer func() {
+			wc.logger.Debugf("[Websocket]: go write exit, err: %v", err)
+		}()
+		defer wc.logger.HandlePanic("Websocket: Write, err %v")
+
+		return wc.write(ctx, wsConn)
+	})
+
+	NewMessageSender(wsConn, "", WsSetUid).SendMsg(wsConn.UID())
+
+	g.Go(func() error {
+		var err error
+		defer func() {
+			wc.logger.Debugf("[Websocket]: go read exit, err: %v", err)
+		}()
+		defer wc.logger.HandlePanic("[Websocket]: read recovery")
+		return wc.read(ctx, wsConn)
+	})
+
+	if err = g.Wait(); err != nil {
+		return
+	}
+}
+
+func (wc *WebsocketManager) Shutdown(ctx context.Context) error {
+	return wc.counter.Wait(ctx)
+}
+
+func (wc *WebsocketManager) read(ctx context.Context, wsconn Conn) error {
+	wsconn.SetReadLimit(maxMessageSize)
+	wsconn.SetReadDeadline(wc.timer.Now().Add(pongWait))
+	wsconn.SetPongHandler(func(string) error {
+		wsconn.SetReadDeadline(wc.timer.Now().Add(pongWait))
 		return nil
 	})
 	for {
 		var wsRequest websocket_pb.WsRequestMetadata
-		_, message, err := wsconn.conn.ReadMessage()
+		_, message, err := wsconn.ReadMessage()
 		if err != nil {
-			mlog.Debugf("[Websocket]: read error: %v", err)
+			wc.logger.Debugf("[Websocket]: read error: %v", err)
 			return err
 		}
 		if err := proto.Unmarshal(message, &wsRequest); err != nil {
@@ -248,85 +235,136 @@ func read(wsconn *WsConn) error {
 			continue
 		}
 
-		go func(wsRequest *websocket_pb.WsRequestMetadata, message []byte) {
-			if handler, ok := handlers[wsRequest.Type]; ok {
-				handler(wsconn, wsRequest.Type, message)
-			}
-		}(&wsRequest, message)
+		go wc.dispatchEvent(ctx, wsconn, &wsRequest, message)
 	}
 }
 
-func HandleWsAuthorize(c *WsConn, t websocket_pb.Type, message []byte) {
-	defer utils.HandlePanic("HandleWsAuthorize")
+func (wc *WebsocketManager) write(ctx context.Context, wsconn Conn) (err error) {
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		wc.logger.Debugf("[Websocket]: go write exit, %v", err)
+		ticker.Stop()
+		wsconn.CloseAndClean(ctx)
+	}()
+	wc.logger.Debug(wsconn.PubSub().ID(), wsconn.PubSub().Uid())
+	ch := wsconn.PubSub().Subscribe()
+	var w io.WriteCloser
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case message, ok := <-ch:
+			if !ok {
+				return wsconn.WriteMessage(websocket.CloseMessage, []byte{})
+			}
 
+			wsconn.SetWriteDeadline(wc.timer.Now().Add(writeWait))
+			w, err = wsconn.NextWriter(websocket.BinaryMessage)
+			if err != nil {
+				return err
+			}
+			w.Write(message)
+
+			if err = w.Close(); err != nil {
+				return err
+			}
+		case <-ticker.C:
+			wsconn.SetWriteDeadline(wc.timer.Now().Add(writeWait))
+			if err = wsconn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (wc *WebsocketManager) dispatchEvent(ctx context.Context, wsconn Conn, wsRequest *websocket_pb.WsRequestMetadata, message []byte) {
+	if handler, ok := wc.handlers[wsRequest.Type]; ok {
+		defer wc.logger.HandlePanicWithCallback(wsRequest.Type.String(), func(err error) {
+			metrics.WebsocketPanicCount.With(prometheus.Labels{"method": wsRequest.Type.String()}).Inc()
+		})
+		defer func(t time.Time) {
+			metrics.WebsocketRequestLatency.With(prometheus.Labels{"method": wsRequest.Type.String()}).Observe(wc.timer.Since(t).Seconds())
+			e := recover()
+			if e == nil {
+				metrics.WebsocketRequestTotalSuccess.With(prometheus.Labels{"method": wsRequest.Type.String()}).Inc()
+			} else {
+				metrics.WebsocketRequestTotalFail.With(prometheus.Labels{"method": wsRequest.Type.String()}).Inc()
+				panic(e)
+			}
+		}(wc.timer.Now())
+
+		wc.logger.Debugf("wsType: %v, message: %v", wsRequest.Type.String(), string(message))
+
+		// websocket.onopen 事件不一定是最早发出来的，所以要等 onopen 的认证结束后才能进行后面的操作
+		if wsconn.GetUser() == nil && wsRequest.Type != websocket_pb.Type_HandleAuthorize {
+			NewMessageSender(wsconn, "", WsAuthorize).SendMsg("认证中，请稍等~")
+			return
+		}
+		handler(ctx, wsconn, wsRequest.Type, message)
+	}
+}
+
+func (wc *WebsocketManager) HandleAuthorize(ctx context.Context, c Conn, t websocket_pb.Type, message []byte) {
 	var input websocket_pb.AuthorizeTokenInput
 	if err := proto.Unmarshal(message, &input); err != nil {
-		mlog.Error("[Websocket]: " + err.Error())
+		wc.logger.Error("[Websocket]: " + err.Error())
 		NewMessageSender(c, "", t).SendEndError(err)
 
 		return
 	}
 
-	if claims, b := app.Auth().VerifyToken(input.Token); b {
+	if claims, b := wc.auth.VerifyToken(input.Token); b {
 		c.SetUser(claims.UserInfo)
+		metrics.WebsocketConnectionsCount.With(prometheus.Labels{"username": claims.UserInfo.Name}).Inc()
 	}
 }
 
-func HandleWsHandleCloseShell(c *WsConn, t websocket_pb.Type, message []byte) {
-	defer utils.HandlePanic("HandleWsHandleCloseShell")
-
-	var input websocket_pb.TerminalMessageInput
+func (wc *WebsocketManager) HandleJoinRoom(ctx context.Context, c Conn, t websocket_pb.Type, message []byte) {
+	var input websocket_pb.ProjectPodEventJoinInput
 	if err := proto.Unmarshal(message, &input); err != nil {
-		mlog.Error(err.Error())
+		wc.logger.Error("[Websocket]: " + err.Error())
 		NewMessageSender(c, "", t).SendEndError(err)
 
 		return
 	}
-	mlog.Debugf("[Websocket]: %v 收到客户端主动断开的消息", input.Message.SessionId)
-	c.terminalSessions.Close(input.Message.SessionId, 0, "")
-}
-
-func HandleWsHandleExecShellMsg(c *WsConn, t websocket_pb.Type, message []byte) {
-	defer utils.HandlePanic("HandleWsHandleExecShellMsg")
-
-	var input websocket_pb.TerminalMessageInput
-	if err := proto.Unmarshal(message, &input); err != nil {
-		NewMessageSender(c, "", t).SendEndError(err)
-
+	wc.logger.Debug("HandleJoinRoom: ", input.String())
+	if input.Join {
+		if err := c.PubSub().(application.ProjectPodEventSubscriber).Join(int64(input.GetProjectId())); err != nil {
+			wc.logger.Error("join: ", err, input.String())
+		}
 		return
 	}
-	if input.Message.SessionId != "" {
-		c.terminalSessions.Send(input.Message)
+	if err := c.PubSub().(application.ProjectPodEventSubscriber).Leave(int64(input.GetNamespaceId()), int64(input.GetProjectId())); err != nil {
+		wc.logger.Error("leave: ", err, input.String())
 	}
 }
 
-func HandleWsHandleExecShell(c *WsConn, t websocket_pb.Type, message []byte) {
+func (wc *WebsocketManager) HandleStartShell(ctx context.Context, c Conn, t websocket_pb.Type, message []byte) {
 	var input websocket_pb.WsHandleExecShellInput
 	if err := proto.Unmarshal(message, &input); err != nil {
 		NewMessageSender(c, "", t).SendEndError(err)
 		return
 	}
-
-	sessionID, err := HandleExecShell(&input, c)
+	sessionID, err := wc.StartShell(ctx, &input, c)
 	if err != nil {
-		mlog.Error(err)
+		wc.logger.Error(err)
 		NewMessageSender(c, "", WsHandleExecShell).SendEndError(err)
 		return
 	}
 
-	mlog.Debugf("[Websocket]: 收到 初始化连接 WsHandleExecShell 消息, id: %v", sessionID)
+	wc.logger.Debugf("[Websocket]: 收到 初始化连接 WsHandleExecShell 消息, sessionID: %v", sessionID)
 
 	NewMessageSender(c, "", WsHandleExecShell).SendProtoMsg(&websocket_pb.WsHandleShellResponse{
 		Metadata: &websocket_pb.Metadata{
-			Id:     c.id,
-			Uid:    c.uid,
+			Id:     c.ID(),
+			Uid:    c.UID(),
 			Type:   WsHandleExecShell,
 			Result: ResultSuccess,
 		},
 		TerminalMessage: &websocket_pb.TerminalMessage{
 			SessionId: sessionID,
 		},
-		Container: &types.Container{
+		Container: &websocket_pb.Container{
 			Namespace: input.Container.Namespace,
 			Pod:       input.Container.Pod,
 			Container: input.Container.Container,
@@ -334,9 +372,101 @@ func HandleWsHandleExecShell(c *WsConn, t websocket_pb.Type, message []byte) {
 	})
 }
 
-func HandleWsCancel(c *WsConn, t websocket_pb.Type, message []byte) {
-	defer utils.HandlePanic("HandleWsCancel")
+func (wc *WebsocketManager) HandleShellMessage(ctx context.Context, c Conn, t websocket_pb.Type, message []byte) {
+	var input websocket_pb.TerminalMessageInput
+	if err := proto.Unmarshal(message, &input); err != nil {
+		NewMessageSender(c, "", t).SendEndError(err)
 
+		return
+	}
+
+	if pty, ok := c.GetPtyHandler(input.Message.SessionId); ok {
+		if err := pty.Send(ctx, input.Message); err != nil {
+			wc.logger.Error("[Websocket]: " + err.Error())
+		}
+	}
+}
+
+func (wc *WebsocketManager) HandleCloseShell(ctx context.Context, c Conn, t websocket_pb.Type, message []byte) {
+	var input websocket_pb.TerminalMessageInput
+	if err := proto.Unmarshal(message, &input); err != nil {
+		wc.logger.Error(err.Error())
+		NewMessageSender(c, "", t).SendEndError(err)
+
+		return
+	}
+	msg := fmt.Sprintf("[Websocket]: %v 收到客户端主动断开的消息", input.Message.SessionId)
+	wc.logger.Debugf(msg)
+	c.ClosePty(ctx, input.Message.SessionId, 0, msg)
+}
+
+func (wc *WebsocketManager) HandleWsCreateProject(ctx context.Context, c Conn, t websocket_pb.Type, message []byte) {
+	var input websocket_pb.CreateProjectInput
+	if err := proto.Unmarshal(message, &input); err != nil {
+		NewMessageSender(c, "", t).SendEndError(err)
+
+		return
+	}
+
+	appName := lo.FromPtr(input.Name)
+	if appName == "" {
+		show, _ := wc.repoRepo.Get(ctx, int(input.RepoId))
+		appName = show.Name
+	}
+
+	if err := wc.upgradeOrInstall(ctx, c, &JobInput{
+		Type:        input.Type,
+		NamespaceId: input.NamespaceId,
+		Name:        appName,
+		RepoID:      input.RepoId,
+		GitBranch:   input.GitBranch,
+		GitCommit:   input.GitCommit,
+		Config:      input.Config,
+		Atomic:      input.Atomic,
+		ExtraValues: input.ExtraValues,
+		User:        c.GetUser(),
+		PubSub:      c.PubSub(),
+		Messager:    NewMessageSender(c, GetSlugName(input.NamespaceId, appName), t),
+	}); err != nil {
+		wc.logger.Error(err)
+	}
+}
+
+func (wc *WebsocketManager) HandleWsUpdateProject(ctx context.Context, c Conn, t websocket_pb.Type, message []byte) {
+	var input websocket_pb.UpdateProjectInput
+	if err := proto.Unmarshal(message, &input); err != nil {
+		NewMessageSender(c, "", t).SendEndError(err)
+		return
+	}
+
+	p, err := wc.projRepo.Show(ctx, int(input.ProjectId))
+	if err != nil {
+		NewMessageSender(c, "", t).SendEndError(err)
+		return
+	}
+
+	wc.logger.Warning("update project", input.String())
+
+	wc.upgradeOrInstall(ctx, c, &JobInput{
+		Type:           t,
+		NamespaceId:    int32(p.NamespaceID),
+		Name:           p.Name,
+		RepoID:         int32(p.RepoID),
+		GitBranch:      input.GitBranch,
+		GitCommit:      input.GitCommit,
+		Config:         input.Config,
+		Atomic:         input.Atomic,
+		ExtraValues:    input.ExtraValues,
+		Version:        lo.ToPtr(input.Version),
+		ProjectID:      input.ProjectId,
+		TimeoutSeconds: int32(wc.data.Config().InstallTimeout.Seconds()),
+		User:           c.GetUser(),
+		PubSub:         c.PubSub(),
+		Messager:       NewMessageSender(c, GetSlugName(p.NamespaceID, p.Name), t),
+	})
+}
+
+func (wc *WebsocketManager) HandleWsCancelDeploy(ctx context.Context, c Conn, t websocket_pb.Type, message []byte) {
 	var input websocket_pb.CancelInput
 	if err := proto.Unmarshal(message, &input); err != nil {
 		NewMessageSender(c, "", t).SendEndError(err)
@@ -344,98 +474,44 @@ func HandleWsCancel(c *WsConn, t websocket_pb.Type, message []byte) {
 		return
 	}
 
-	// cancel
-	var slugName = getSlugName(input.NamespaceId, input.Name)
-	if c.cancelSignaler.Has(slugName) {
-		c.cancelSignaler.Cancel(slugName)
-	}
-}
+	var slugName = GetSlugName(input.NamespaceId, input.Name)
 
-func HandleWsCreateProject(c *WsConn, t websocket_pb.Type, message []byte) {
-	defer utils.HandlePanic("HandleWsCreateProject")
-
-	var input websocket_pb.CreateProjectInput
-	if err := proto.Unmarshal(message, &input); err != nil {
-		NewMessageSender(c, "", t).SendEndError(err)
-
-		return
-	}
-	slug := getSlugName(input.NamespaceId, input.Name)
-	job := NewJober(&input, c.GetUser(), slug, NewMessageSender(c, slug, t), c.pubSub, 0)
-	if err := c.cancelSignaler.Add(job.ID(), job.Stop); err != nil {
-		NewMessageSender(c, "", t).SendEndError(err)
-		return
-	}
-	defer c.cancelSignaler.Remove(job.ID())
-	InstallProject(job)
-}
-
-var getSlugName = utils.GetSlugName
-
-func HandleWsUpdateProject(c *WsConn, t websocket_pb.Type, message []byte) {
-	defer utils.HandlePanic("HandleWsUpdateProject")
-
-	var input websocket_pb.UpdateProjectInput
-	if err := proto.Unmarshal(message, &input); err != nil {
-		NewMessageSender(c, "", t).SendEndError(err)
-		return
-	}
-	var p models.Project
-	if err := app.DB().Where("`id` = ?", input.ProjectId).First(&p).Error; err != nil {
-		NewMessageSender(c, "", t).SendEndError(err)
-		return
-	}
-
-	slug := getSlugName(int64(p.NamespaceId), p.Name)
-	job := NewJober(&websocket_pb.CreateProjectInput{
-		Type:         t,
-		NamespaceId:  int64(p.NamespaceId),
-		Name:         p.Name,
-		GitProjectId: int64(p.GitProjectId),
-		GitBranch:    input.GitBranch,
-		GitCommit:    input.GitCommit,
-		Config:       input.Config,
-		Atomic:       input.Atomic,
-		ExtraValues:  input.ExtraValues,
-	}, c.GetUser(), slug, NewMessageSender(c, slug, t), c.pubSub, 0)
-	if err := c.cancelSignaler.Add(job.ID(), job.Stop); err != nil {
-		NewMessageSender(c, "", t).SendEndError(err)
-		return
-	}
-	defer c.cancelSignaler.Remove(job.ID())
-	InstallProject(job)
-}
-
-func InstallProject(job Job) {
-	var err error
-	defer func() {
-		job.CallDestroyFuncs()
-		if err != nil && !job.IsDryRun() {
-			job.Prune()
-		}
-		job.Finish()
-	}()
-
-	if err = job.Validate(); err != nil {
-		job.Messager().SendEndError(err)
-		return
-	}
-
-	if err = job.LoadConfigs(); err != nil {
-		if err := job.GetStoppedErrorIfHas(); err != nil {
-			job.Messager().SendDeployedResult(websocket_pb.ResultType_DeployedCanceled, err.Error(), job.Project())
-			job.Messager().Stop(err)
+	if err := c.RunCancelDeployTask(slugName); err == nil {
+		ns, err := wc.nsRepo.Show(ctx, int(input.NamespaceId))
+		if err != nil {
+			wc.logger.Error(err, input.NamespaceId)
 			return
 		}
-		job.Messager().SendEndError(err)
-		return
+		wc.eventRepo.AuditLog(
+			types.EventActionType_CancelDeploy,
+			c.GetUser().Name,
+			fmt.Sprintf("用户取消部署 namespace: %s, 服务 %s.", ns.Name, input.Name))
 	}
+}
 
-	res := &websocket_pb.WsMetadataResponse{Metadata: &websocket_pb.Metadata{Type: WsReloadProjects}}
-	if err = job.Run(); err != nil {
-		job.PubSub().ToAll(res)
-		return
+func (wc *WebsocketManager) upgradeOrInstall(ctx context.Context, c Conn, input *JobInput) error {
+	indent, _ := json.MarshalIndent(input, "", "  ")
+	wc.logger.Debug(string(indent))
+	slug := GetSlugName(input.NamespaceId, input.Name)
+	job := wc.jobManager.NewJob(input)
+
+	if input.IsNotDryRun() {
+		if err := c.AddCancelDeployTask(job.ID(), job.Stop); err != nil {
+			NewMessageSender(c, slug, input.Type).SendDeployedResult(ResultDeployFailed, "正在清理中，请稍后再试。", nil)
+			return nil
+		}
+		job.OnFinally(1000, func(err error, base func()) {
+			c.RemoveCancelDeployTask(job.ID())
+			base()
+		})
 	}
+	return InstallProject(ctx, job)
+}
 
-	job.PubSub().ToOthers(res)
+func InstallProject(ctx context.Context, job Job) (err error) {
+	return job.GlobalLock().Validate().LoadConfigs().Run(ctx).Finish().Error()
+}
+
+func GetSlugName[T int64 | int | int32](namespaceId T, name string) string {
+	return hash.Hash(fmt.Sprintf("%d-%s", namespaceId, name))
 }

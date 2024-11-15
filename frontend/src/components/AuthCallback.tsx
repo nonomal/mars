@@ -1,38 +1,38 @@
 import React, { useEffect, memo } from "react";
-import { useLocation, useHistory } from "react-router-dom";
-import { exchange, info } from "../api/auth";
+import { useLocation, useNavigate } from "react-router-dom";
 import { setToken, setLogoutUrl } from "../utils/token";
 import { useAuth } from "../contexts/auth";
 import { getState, removeState } from "../utils/token";
 import { message } from "antd";
+import ajax from "../api/ajax";
 
 function useQuery() {
   return new URLSearchParams(useLocation().search);
 }
 const Callback: React.FC = () => {
   let query = useQuery();
-  const h = useHistory();
+  const h = useNavigate();
   let code = query.get("code");
   let state = query.get("state");
   const auth = useAuth();
   if (!code) {
-    h.push("/login");
+    h("/login");
   }
   useEffect(() => {
     if (code) {
       if (state === getState()) {
-        exchange({ code }).then((res) => {
-          setToken(res.data.token);
-          info().then((res) => {
-            setLogoutUrl(res.data.logout_url);
-            auth.setUser(res.data);
+        ajax.POST("/api/auth/exchange", { body: { code } }).then(({ data }) => {
+          data && setToken(data.token);
+          ajax.GET("/api/auth/info").then(({ data }) => {
+            data && setLogoutUrl(data?.logoutUrl);
+            data && auth.setUser(data);
           });
-          h.push("/");
+          h("/");
         });
       } else {
         message.error("state 不一致，请重新登录");
         removeState();
-        h.push("/login");
+        h("/login");
       }
     }
   }, [code, h, auth, state]);

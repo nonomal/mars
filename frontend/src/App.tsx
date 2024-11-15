@@ -1,51 +1,63 @@
 import React, { FC, lazy, Suspense } from "react";
-import { Layout } from "antd";
 import AppContent from "./components/AppContent";
-import { ProvideWebsocket } from "./contexts/useWebsocket";
-import { Switch, Route } from "react-router-dom";
-import AppHeader from "./components/AppHeader";
-import AppFooter from "./components/AppFooter";
-import { PrivateRoute } from "./contexts/auth";
-const { Header, Content, Footer } = Layout;
+import { Route, Routes, useNavigate } from "react-router-dom";
+import "mac-scrollbar/dist/mac-scrollbar.css";
+import AppLayout from "./components/AppLayout";
+import { Button, Result } from "antd";
 
-const GitProjectManager = lazy(
-  () => import("./components/GitProjectManager")
-);
-
-const Events = lazy(() => import("./components/Events"));
+const Events = lazy(() => import("./pages/Events"));
+const RepoPage = lazy(() => import("./pages/Repo"));
+const AccessTokenManager = lazy(() => import("./pages/AccessTokenManager"));
 
 const App: FC = () => {
+  const navigate = useNavigate();
+
   return (
-    <ProvideWebsocket>
-      <Layout className="app">
-        <Header className="app__header" style={{ position: "fixed", zIndex: 1, width: "100%", overflow: "hidden" }}>
-          <AppHeader />
-        </Header>
-        <Content className="app-content">
-          <Switch>
-            <PrivateRoute path={`/git_project_manager`}>
-              <Suspense fallback={null}>
-                <GitProjectManager />
-              </Suspense>
-            </PrivateRoute>
-            <PrivateRoute path={`/events`}>
-              <Suspense fallback={null}>
-                <Events />
-              </Suspense>
-            </PrivateRoute>
-            <PrivateRoute path={`/`} exact>
-              <AppContent />
-            </PrivateRoute>
-            <Route path="*" exact>
-              404
-            </Route>
-          </Switch>
-        </Content>
-        <Footer className="app-footer">
-          <AppFooter />
-        </Footer>
-      </Layout>
-    </ProvideWebsocket>
+    <Routes>
+      <Route path="/" element={<AppLayout />}>
+        <Route index element={<AppContent />} />
+        <Route
+          path="repos"
+          element={
+            <Suspense fallback={null}>
+              <RepoPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="events"
+          element={
+            <Suspense fallback={null}>
+              <Events />
+            </Suspense>
+          }
+        />
+        <Route
+          path="access_token_manager"
+          element={
+            <Suspense fallback={null}>
+              <AccessTokenManager />
+            </Suspense>
+          }
+        />
+
+        <Route
+          path="*"
+          element={
+            <Result
+              status="404"
+              title="404"
+              subTitle="页面不存在~"
+              extra={
+                <Button type="primary" onClick={() => navigate("/")}>
+                  返回主页
+                </Button>
+              }
+            />
+          }
+        ></Route>
+      </Route>
+    </Routes>
   );
 };
 

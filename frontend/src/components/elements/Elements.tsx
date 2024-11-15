@@ -1,9 +1,15 @@
-import React, { useCallback, useState, Fragment, useMemo, memo } from "react";
-import pb from "../../api/compiled";
+import React, { useCallback, useState, Fragment, memo, useMemo } from "react";
 import { Form, Input, InputNumber, Radio, Select, Switch } from "antd";
+import { omitEqual } from "../../utils/obj";
+import { css } from "@emotion/css";
+import { components, MarsElementType } from "../../api/schema.d";
+import { set, findIndex } from "lodash";
+
 const Option = Select.Option;
+const { TextArea } = Input;
 
 interface st {
+  textarea?: React.CSSProperties;
   input?: React.CSSProperties;
   inputNumber?: React.CSSProperties;
   label?: React.CSSProperties;
@@ -38,39 +44,16 @@ const initStyle = {
 };
 
 const Elements: React.FC<{
-  value?: pb.types.ExtraValue[];
-  onChange?: (value: pb.types.ExtraValue[]) => void;
-  elements: pb.mars.Element[];
+  value?: components["schemas"]["websocket.ExtraValue"][];
+  onChange?: (value: components["schemas"]["websocket.ExtraValue"][]) => void;
+  elements: components["schemas"]["mars.Element"][];
   style?: st;
-}> = ({ elements, style, value, onChange }) => {
-  let initValues = useMemo(() => {
-    return elements
-      ? elements.map((item): pb.types.ExtraValue => {
-          let itemValue: any = item.default;
-          if (!!value) {
-            for (let i = 0; i < value.length; i++) {
-              if (value[i].path === item.path) {
-                itemValue = value[i].value;
-                if (item.type === pb.mars.ElementType.ElementTypeSwitch) {
-                  itemValue = isTrue(itemValue);
-                }
-                if (item.type === pb.mars.ElementType.ElementTypeInputNumber) {
-                  itemValue = Number(itemValue);
-                }
-                break;
-              }
-            }
-          }
-          return { path: item.path, value: itemValue };
-        })
-      : [];
-  }, [elements, value]);
-
+  id?: string;
+}> = ({ elements, style, value, onChange, id }) => {
   const getElement = useCallback(
     (
-      item: pb.types.ExtraValue,
-      ele: pb.mars.Element[],
-      index: number
+      item: components["schemas"]["websocket.ExtraValue"],
+      ele: components["schemas"]["mars.Element"][],
     ): React.ReactNode => {
       for (let i = 0; i < ele.length; i++) {
         let ev = ele[i];
@@ -79,8 +62,13 @@ const Elements: React.FC<{
             <Element
               value={item.value}
               onChange={(changeValue) => {
-                let tmp: any = initValues;
-                tmp[index].value = String(changeValue);
+                let tmp: components["schemas"]["websocket.ExtraValue"][] =
+                  value || [];
+                let idx = findIndex(tmp, (v) => v.path === item.path);
+                set(tmp, idx, {
+                  path: item.path,
+                  value: String(changeValue),
+                });
                 onChange?.(tmp);
                 return tmp;
               }}
@@ -92,14 +80,38 @@ const Elements: React.FC<{
       }
       return <></>;
     },
-    [onChange, style, initValues]
+    [onChange, style, value],
   );
 
+  let initValues = useMemo(() => {
+    return elements
+      ? elements.map((item): components["schemas"]["websocket.ExtraValue"] => {
+          let itemValue: any = item.default;
+          if (!!value) {
+            for (let i = 0; i < value.length; i++) {
+              if (value[i].path === item.path) {
+                itemValue = value[i].value;
+                if (item.type === MarsElementType.ElementTypeSwitch) {
+                  itemValue = isTrue(itemValue);
+                }
+                if (item.type === MarsElementType.ElementTypeInputNumber) {
+                  itemValue = Number(itemValue);
+                }
+                break;
+              }
+            }
+          }
+          return { path: item.path, value: itemValue };
+        })
+      : [];
+  }, [elements, value]);
+
   return (
-    <div style={{ width: "100%" }}>
-      {initValues.map((item, index) => (
-        <Fragment key={item.path}>{getElement(item, elements, index)}</Fragment>
-      ))}
+    <div style={{ width: "100%" }} id={id}>
+      {initValues &&
+        initValues.map((item) => (
+          <Fragment key={item.path}>{getElement(item, elements)}</Fragment>
+        ))}
     </div>
   );
 };
@@ -107,12 +119,12 @@ const Elements: React.FC<{
 const Element: React.FC<{
   value: any;
   onChange: (v: any) => void;
-  element: pb.mars.Element;
+  element: components["schemas"]["mars.Element"];
   style: st;
 }> = ({ element, style, value: v, onChange }) => {
   const [value, setValue] = useState(v);
   switch (element.type) {
-    case pb.mars.ElementType.ElementTypeInput:
+    case MarsElementType.ElementTypeInput:
       return (
         <Form.Item
           label={<div style={style.label}>{element.description}</div>}
@@ -129,7 +141,31 @@ const Element: React.FC<{
           />
         </Form.Item>
       );
-    case pb.mars.ElementType.ElementTypeInputNumber:
+    case MarsElementType.ElementTypeTextArea:
+      return (
+        <Form.Item
+          className={css`
+            margin-bottom: 10px;
+            .ant-form-item-row {
+              display: block;
+            }
+          `}
+          labelAlign={"left"}
+          label={<div style={style.label}>{element.description}</div>}
+          style={{ width: "100%" }}
+        >
+          <TextArea
+            defaultValue={element.default}
+            value={value}
+            onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => {
+              setValue(e.target.value);
+              onChange(e.target.value);
+            }}
+            style={style.textarea}
+          />
+        </Form.Item>
+      );
+    case MarsElementType.ElementTypeInputNumber:
       return (
         <Form.Item
           label={<div style={style.label}>{element.description}</div>}
@@ -146,7 +182,8 @@ const Element: React.FC<{
           />
         </Form.Item>
       );
-    case pb.mars.ElementType.ElementTypeRadio:
+    case MarsElementType.ElementTypeRadio:
+    case MarsElementType.ElementTypeNumberRadio:
       return (
         <Form.Item
           label={<div style={style.label}>{element.description}</div>}
@@ -161,7 +198,7 @@ const Element: React.FC<{
               onChange(e.target.value);
             }}
           >
-            {element.select_values.map((i, k) => (
+            {element.selectValues.map((i, k) => (
               <Radio key={k} value={i} style={style.radio}>
                 {i}
               </Radio>
@@ -169,7 +206,8 @@ const Element: React.FC<{
           </Radio.Group>
         </Form.Item>
       );
-    case pb.mars.ElementType.ElementTypeSelect:
+    case MarsElementType.ElementTypeSelect:
+    case MarsElementType.ElementTypeNumberSelect:
       return (
         <Form.Item
           label={<div style={style.label}>{element.description}</div>}
@@ -184,15 +222,15 @@ const Element: React.FC<{
               onChange(e);
             }}
           >
-            {element.select_values.map((i, k) => (
-              <Option value={i} key={k} style={style}>
-                {i}
+            {element.selectValues.map((i, k) => (
+              <Option value={i} key={k}>
+                <div style={style.selectOption}>{i}</div>
               </Option>
             ))}
           </Select>
         </Form.Item>
       );
-    case pb.mars.ElementType.ElementTypeSwitch:
+    case MarsElementType.ElementTypeSwitch:
       return (
         <Form.Item
           label={<div style={style.label}>{element.description}</div>}
@@ -201,7 +239,7 @@ const Element: React.FC<{
           <Switch
             defaultChecked={isTrue(element.default)}
             style={style.switch}
-            checked={value}
+            checked={isTrue(value)}
             onChange={(e) => {
               setValue(e);
               onChange(e);
@@ -214,4 +252,6 @@ const Element: React.FC<{
   }
 };
 
-export default memo(Elements);
+export default memo(Elements, (prev, next) =>
+  omitEqual(prev, next, "onChange"),
+);

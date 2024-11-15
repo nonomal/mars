@@ -1,20 +1,22 @@
 package main
 
 import (
+	"github.com/duc-cnzj/mars/v5/cmd"
+	"github.com/duc-cnzj/mars/v5/internal/logo"
+
 	_ "embed"
 
-	"github.com/duc-cnzj/mars/cmd"
-
-	_ "github.com/duc-cnzj/mars/plugins/domain_manager"
-	_ "github.com/duc-cnzj/mars/plugins/git_server/github"
-	_ "github.com/duc-cnzj/mars/plugins/git_server/gitlab"
-	_ "github.com/duc-cnzj/mars/plugins/picture"
-	_ "github.com/duc-cnzj/mars/plugins/wssender"
+	_ "github.com/duc-cnzj/mars/v5/internal/plugins/domainmanager"
+	_ "github.com/duc-cnzj/mars/v5/internal/plugins/gitserver/gitlab"
+	_ "github.com/duc-cnzj/mars/v5/internal/plugins/picture"
+	_ "github.com/duc-cnzj/mars/v5/internal/plugins/wssender/memory"
+	_ "github.com/duc-cnzj/mars/v5/internal/plugins/wssender/nsq"
+	_ "github.com/duc-cnzj/mars/v5/internal/plugins/wssender/redis"
 )
 
 //go:embed config_example.yaml
 var configFile []byte
 
 func main() {
-	cmd.Execute(configFile)
+	cmd.Execute(configFile, logo.WithAuthor())
 }

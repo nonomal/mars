@@ -1,76 +1,64 @@
-import React, { useState, useEffect, useCallback, memo } from "react";
-import { bg } from "../api/background";
-import pb from "../api/compiled";
-import { Form, Button, Input } from "antd";
+import React, { useState, useEffect, memo } from "react";
+import { Form, Button, Input, Divider } from "antd";
 import { useAuth } from "../contexts/auth";
-import { useHistory } from "react-router-dom";
-import {
-  GoogleOutlined,
-  GithubOutlined,
-  QqOutlined,
-  WechatOutlined,
-  PushpinFilled,
-  PushpinOutlined,
-} from "@ant-design/icons";
-import { settings as settingsApi } from "../api/auth";
+import { useLocation, useNavigate } from "react-router-dom";
+import { PushpinFilled, PushpinOutlined } from "@ant-design/icons";
 import { setState, isRandomBg, toggleRandomBg } from "../utils/token";
+import { css } from "@emotion/css";
+import theme from "../styles/theme";
+import styled from "@emotion/styled";
+import ajax from "../api/ajax";
+import { components } from "../api/schema";
 
 const Login: React.FC = () => {
-  const [bgInfo, setBgInfo] = useState<pb.picture.BackgroundResponse>();
-  const [settings, setSettings] = useState<pb.auth.SettingsResponse>();
+  const [bgInfo, setBgInfo] =
+    useState<components["schemas"]["picture.BackgroundResponse"]>();
+  const [settings, setSettings] =
+    useState<components["schemas"]["auth.SettingsResponse"]>();
   const [random, setRandom] = useState(isRandomBg());
 
   useEffect(() => {
-    bg({ random: isRandomBg() }).then((res) => setBgInfo(res.data));
-    settingsApi().then((res) => {
-      setSettings(res.data);
+    ajax
+      .GET("/api/picture/background", {
+        params: { query: { random: isRandomBg() } },
+      })
+      .then((res) => setBgInfo(res.data));
+    ajax.GET("/api/auth/settings").then(({ data }) => {
+      data && setSettings(data);
     });
   }, []);
 
-  const h = useHistory();
+  const h = useNavigate();
   const auth = useAuth();
-
-  const renderOidcItem: (name: string) => React.ReactNode = useCallback(
-    (name: string) => {
-      switch (name) {
-        case "wechat":
-          return (
-            <div className="login__sso-icon-item">
-              <WechatOutlined />
-            </div>
-          );
-        case "qq":
-          return (
-            <div className="login__sso-icon-item">
-              <QqOutlined />
-            </div>
-          );
-        case "github":
-          return (
-            <div className="login__sso-icon-item">
-              <GithubOutlined />
-            </div>
-          );
-        case "google":
-          return (
-            <div className="login__sso-icon-item">
-              <GoogleOutlined />
-            </div>
-          );
-        default:
-          return <div className="login__sso-item__name">{name}</div>;
-      }
-    },
-    []
-  );
+  const location = useLocation();
 
   return (
     <div
-      className="login__bg"
+      className={css`
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        position: relative;
+        background-position: center center;
+        background-size: cover;
+      `}
       style={bgInfo?.url ? { backgroundImage: "url(" + bgInfo.url + ")" } : {}}
     >
       <div
-        className="login__pin"
+        className={css`
+          position: absolute;
+          top: 15px;
+          right: 15px;
+          font-size: 16px;
+          opacity: 0.5;
+          transition: 0.5s;
+          &:hover {
+            cursor: pointer;
+            opacity: 1;
+          }
+        `}
         onClick={() => {
           setRandom(toggleRandomBg());
         }}
@@ -78,14 +66,18 @@ const Login: React.FC = () => {
       >
         {random ? <PushpinOutlined /> : <PushpinFilled />}
       </div>
-      <div className="login__card">
-        <div className="login__title">Mars Login</div>
+      <LoginCard>
+        <LoginTitle>Mars Login</LoginTitle>
         <div>
           <Form
             name="basic"
             onFinish={(values: any) => {
               auth.login(values.username, values.password, () => {
-                h.push("/");
+                let to = "/";
+                if (location.state && location.state.from.search) {
+                  to += location.state?.from.search;
+                }
+                h(to);
               });
             }}
             autoComplete="off"
@@ -94,7 +86,7 @@ const Login: React.FC = () => {
               name="username"
               rules={[{ required: true, message: "请输入用户名" }]}
             >
-              <Input placeholder="用户名" />
+              <Input autoFocus placeholder="用户名" />
             </Form.Item>
 
             <Form.Item
@@ -105,38 +97,98 @@ const Login: React.FC = () => {
             </Form.Item>
 
             <Form.Item>
-              <Button
-                type="primary"
-                htmlType="submit"
+              <button
+                className={css`
+                  line-height: 1.5715;
+                  position: relative;
+                  display: inline-block;
+                  cursor: pointer;
+                  font-weight: 400;
+                  white-space: nowrap;
+                  text-align: center;
+                  -webkit-user-select: none;
+                  user-select: none;
+                  touch-action: manipulation;
+                  height: 32px;
+                  padding: 4px 15px;
+                  font-size: 14px;
+
+                  border: none;
+                  background-color: ${theme.mainColor};
+                  transition: 0.5s;
+                  color: white;
+                  border-radius: 2px;
+
+                  &:hover {
+                    background-color: ${theme.deepColor};
+                    color: #fff;
+                    text-decoration: none;
+                  }
+                `}
+                type="submit"
                 style={{ width: "100%" }}
               >
                 登录
-              </Button>
+              </button>
             </Form.Item>
+            {settings?.items && settings?.items.length > 0 && (
+              <Divider style={{ fontWeight: "normal", fontSize: 12 }}>
+                或者
+              </Divider>
+            )}
 
-            <div className="login__sso-card">
-              {settings?.items.map((item, index) => (
-                <Form.Item key={index}>
-                  <a
-                    href="javascript(0);"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      setState(item.state || "");
-                      window.location.href = item.url || "/login";
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              {settings?.items.map((item) => (
+                <Button
+                  type="primary"
+                  key={item.name}
+                  className={css`
+                    background-color: ${theme.deepColor};
+                    border: none;
+                    color: white;
+                  `}
+                  href="javascript(0);"
+                  style={{ marginBottom: 10 }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setState(item.state || "");
+                    window.location.href = item.url || "/login";
+                  }}
+                >
+                  <span
+                    style={{
+                      textTransform: "uppercase",
+                      fontFamily: "monospace",
                     }}
-                    className="login__sso-item"
                   >
-                    {renderOidcItem(item.name || "")}
-                  </a>
-                </Form.Item>
+                    {item.name}
+                  </span>
+                </Button>
               ))}
             </div>
           </Form>
         </div>
-      </div>
+      </LoginCard>
 
       {bgInfo?.copyright && (
-        <div className="login__copyright">
+        <div
+          className={css`
+            font-size: 15px;
+            font-weight: lighter;
+            color: white;
+            position: absolute;
+            bottom: 20px;
+            margin: 0 auto;
+            padding: 3px 15px;
+            backdrop-filter: blur(5px);
+            border-radius: 5px;
+            @media (min-width: 640px) {
+              font-size: 20px;
+              bottom: 50px;
+              right: 50px;
+            }
+          `}
+        >
           <div>{bgInfo.copyright}</div>
         </div>
       )}
@@ -145,3 +197,39 @@ const Login: React.FC = () => {
 };
 
 export default memo(Login);
+
+const LoginTitle = styled.div`
+  font-family: "Comic Sans MS";
+  text-align: center;
+  background-image: linear-gradient(
+    to bottom,
+    ${theme.deepColor},
+    ${theme.titleSecondColor}
+  );
+  -webkit-background-clip: text;
+  color: transparent;
+  margin: 10px 0 20px;
+  font-size: 50px;
+  line-height: 1.5;
+`;
+
+const LoginCard = styled.div`
+  opacity: 0.8;
+  margin: 20px;
+  padding: 10px 50px;
+  width: 400px;
+  border-radius: 8px;
+  transition: box-shadow 0.5s;
+  &:hover {
+    opacity: 1;
+    backdrop-filter: blur(8px);
+    box-shadow: 0px 0px 10px ${theme.titleSecondColor};
+    ${LoginTitle} {
+      transition: 0.5s;
+      text-shadow: 0 0 3px ${theme.titleSecondColor};
+    }
+  }
+  @media (min-width: 640px) {
+    margin: 0;
+  }
+`;

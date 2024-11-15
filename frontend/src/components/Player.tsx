@@ -4,7 +4,7 @@ import * as AsciinemaPlayerLibrary from "asciinema-player";
 import "asciinema-player/dist/bundle/asciinema-player.css";
 import { Radio } from "antd";
 interface AsciinemaPlayerProps {
-  src: string | { url: string; fetchOpts: RequestInit };
+  src: { data: string } | { url: string; fetchOpts: RequestInit };
   // START asciinemaOptions
   cols?: number;
   rows?: number;
@@ -73,7 +73,9 @@ const AsciinemaPlayer: React.FC<AsciinemaPlayerProps> = ({
     p.addEventListener("pause", () => {
       setPaused(true);
     });
+
     return () => {
+      console.log("dispose");
       p.dispose();
     };
   }, [
@@ -124,6 +126,7 @@ const AsciinemaPlayer: React.FC<AsciinemaPlayerProps> = ({
           <Radio value={2}>2x</Radio>
           <Radio value={2.5}>2.5x</Radio>
           <Radio value={3}>3x</Radio>
+          <Radio value={6}>6x</Radio>
         </Radio.Group>
       </div>
       <div ref={ref} />

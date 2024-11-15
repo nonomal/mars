@@ -1,11 +1,11 @@
-import React from "react";
+import React, { memo } from "react";
 import { copy } from "../utils/copy";
 
-const CopyToClipboard: React.FC<{ text: string; successText?: string }> = ({
-  text,
-  successText,
-  children,
-}) => {
+const CopyToClipboard: React.FC<{
+  text: string;
+  successText?: string;
+  children: React.ReactNode;
+}> = ({ text, successText, children }) => {
   return (
     <span style={{ cursor: "pointer" }} onClick={() => copy(text, successText)}>
       {children}
@@ -13,4 +13,4 @@ const CopyToClipboard: React.FC<{ text: string; successText?: string }> = ({
   );
 };
 
-export default CopyToClipboard;
+export default memo(CopyToClipboard);

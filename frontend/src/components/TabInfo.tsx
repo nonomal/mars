@@ -1,6 +1,5 @@
-import React, { memo, useState } from "react";
-import { deleteProject } from "../api/project";
-import { Skeleton, Button, Modal, message } from "antd";
+import React, { memo, useEffect, useState } from "react";
+import { Skeleton, Button, Modal, message, Spin, Space } from "antd";
 import {
   BranchesOutlined,
   PushpinOutlined,
@@ -9,291 +8,150 @@ import {
   FireOutlined,
   FieldNumberOutlined,
   LinkOutlined,
+  ScheduleOutlined,
+  DotChartOutlined,
+  PieChartOutlined,
 } from "@ant-design/icons";
-import pb from "../api/compiled";
 import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
 import { materialDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import yaml from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
+import { components } from "../api/schema";
+import ajax from "../api/ajax";
+import { IconBaseProps } from "@ant-design/icons/lib/components/Icon";
+import styled from "@emotion/styled";
 
 SyntaxHighlighter.registerLanguage("yaml", yaml);
 
 const { confirm } = Modal;
 
 const DetailTab: React.FC<{
-  detail: pb.types.ProjectModel;
-  cpu: string;
-  git_commit_web_url: string;
-  git_commit_title: string;
-  git_commit_author: string;
-  git_commit_date: string;
-  memory: string;
-  urls: pb.types.ServiceEndpoint[];
+  detail: components["schemas"]["types.ProjectModel"];
   onDeleted: () => void;
-}> = ({
-  detail,
-  onDeleted,
-  cpu,
-  memory,
-  urls,
-  git_commit_web_url,
-  git_commit_title,
-  git_commit_author,
-  git_commit_date,
-}) => {
+}> = ({ detail, onDeleted }) => {
   const [loading, setLoading] = useState<boolean>(false);
+  const [cpuMemEndpointsLoading, setCpuMemEndpointsLoading] =
+    useState<boolean>(true);
+  const [cpuMemEndpoints, setCpuMemEndpoints] = useState<{
+    cpu: string;
+    mem: string;
+    urls: components["schemas"]["types.ServiceEndpoint"][];
+  }>({ cpu: "", mem: "", urls: [] });
+  useEffect(() => {
+    setCpuMemEndpointsLoading(true);
+    ajax
+      .GET("/api/projects/{id}/memory_cpu_and_endpoints", {
+        params: { path: { id: detail.id } },
+      })
+      .then(({ data, error }) => {
+        setCpuMemEndpointsLoading(false);
+        if (error) {
+          return;
+        }
+        setCpuMemEndpoints({
+          cpu: data.cpu,
+          mem: data.memory,
+          urls: data.urls,
+        });
+      });
+  }, [detail.id]);
 
   return detail ? (
-    <div style={{ height: "100%", overflowY: "auto" }}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-        }}
-      >
-        <FieldNumberOutlined
-          style={{
-            display: "flex",
-            alignItems: "center",
-            height: 30,
-            marginRight: 4,
-            fontSize: 20,
-          }}
-        />
-        {detail.id}
-      </div>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-        }}
-      >
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          className="h-5 w-5"
-          viewBox="0 0 20 20"
-          fill="currentColor"
-          style={{
-            width: 20,
-            height: 20,
-            marginRight: 4,
-          }}
-        >
-          <path d="M13 7H7v6h6V7z" />
-          <path
-            fillRule="evenodd"
-            d="M7 2a1 1 0 012 0v1h2V2a1 1 0 112 0v1h2a2 2 0 012 2v2h1a1 1 0 110 2h-1v2h1a1 1 0 110 2h-1v2a2 2 0 01-2 2h-2v1a1 1 0 11-2 0v-1H9v1a1 1 0 11-2 0v-1H5a2 2 0 01-2-2v-2H2a1 1 0 110-2h1V9H2a1 1 0 010-2h1V5a2 2 0 012-2h2V2zM5 5h10v10H5V5z"
-            clipRule="evenodd"
-          />
-        </svg>
-        <p>
-          cpu: <span className="detail-data">{cpu}</span>
-        </p>
-      </div>
-
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-        }}
-      >
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          className="h-5 w-5"
-          viewBox="0 0 20 20"
-          fill="currentColor"
-          style={{
-            width: 20,
-            height: 20,
-            marginRight: 4,
-          }}
-        >
-          <path d="M13 7H7v6h6V7z" />
-          <path
-            fillRule="evenodd"
-            d="M7 2a1 1 0 012 0v1h2V2a1 1 0 112 0v1h2a2 2 0 012 2v2h1a1 1 0 110 2h-1v2h1a1 1 0 110 2h-1v2a2 2 0 01-2 2h-2v1a1 1 0 11-2 0v-1H9v1a1 1 0 11-2 0v-1H5a2 2 0 01-2-2v-2H2a1 1 0 110-2h1V9H2a1 1 0 010-2h1V5a2 2 0 012-2h2V2zM5 5h10v10H5V5z"
-            clipRule="evenodd"
-          />
-        </svg>
-        <p>
-          memory: <span className="detail-data">{memory}</span>
-        </p>
-      </div>
-
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-        }}
-      >
-        <BranchesOutlined
-          style={{
-            width: 20,
-            height: 20,
-            marginRight: 4,
-            fontSize: 16,
-          }}
-        />
-        <p>
-          分支: <span className="detail-data">{detail.git_branch}</span>
-        </p>
-      </div>
-
+    <Space direction="vertical" style={{ width: "100%" }}>
+      <LineItem icon={FieldNumberOutlined} title={detail.id} />
+      <LineItem
+        icon={DotChartOutlined}
+        title={"此项目 cpu"}
+        children={
+          !cpuMemEndpointsLoading ? (
+            <span className="detail-data">{cpuMemEndpoints.cpu}</span>
+          ) : (
+            <Spin />
+          )
+        }
+      />
+      <LineItem
+        icon={PieChartOutlined}
+        title={"此项目 memory"}
+        children={
+          !cpuMemEndpointsLoading ? (
+            <span className="detail-data">{cpuMemEndpoints.mem}</span>
+          ) : (
+            <Spin />
+          )
+        }
+      />
       <div>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-          }}
-        >
-          <LinkOutlined
-            style={{
-              width: 20,
-              height: 20,
-              marginRight: 4,
-              fontSize: 16,
-            }}
-          />
-          <p>地址:</p>
-        </div>
-        <ul style={{ listStyle: "none", padding: "0 0 0 1.5em", margin: 0 }}>
-          {urls.map((item, index) => (
-            <li key={index}>
-              {index + 1}.
-              {item.url.startsWith("http") ? (
-                <a href={item.url} target="_blank" className="detail-data">
-                  {item.url}
-                  {item.port_name ? `(${item.port_name})` : ""}
-                </a>
-              ) : (
-                <span>
-                  {item.url}
-                  {item.port_name ? `(${item.port_name})` : ""}
-                </span>
-              )}
-            </li>
-          ))}
+        <LineItem icon={LinkOutlined} title={"地址"} />
+        <ul style={{ listStyle: "none", padding: "0 0 0 1.5rem", margin: 0 }}>
+          {!cpuMemEndpointsLoading ? (
+            cpuMemEndpoints.urls.map((item, index) => (
+              <li key={index}>
+                {index + 1}.
+                {item.url.startsWith("http") ? (
+                  <a href={item.url} target="_blank" className="detail-data">
+                    {item.url}
+                    {item.portName ? `(${item.portName})` : ""}
+                  </a>
+                ) : (
+                  <span>
+                    {item.url}
+                    {item.portName ? `(${item.portName})` : ""}
+                  </span>
+                )}
+              </li>
+            ))
+          ) : (
+            <Spin size={"small"} />
+          )}
         </ul>
       </div>
 
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-        }}
-      >
-        <SettingOutlined
-          style={{
-            width: 20,
-            height: 20,
-            marginRight: 4,
-            fontSize: 16,
-          }}
-        />
-        <p>
-          容器镜像:
-          <span className="detail-data">{detail.docker_image}</span>
-        </p>
-      </div>
-
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-        }}
-      >
-        <PushpinOutlined
-          style={{
-            width: 20,
-            height: 20,
-            marginRight: 4,
-            fontSize: 16,
-          }}
-        />
-        <p>
-          提交:
-          <span className="detail-data">
-            <a href={git_commit_web_url} target="_blank">
-              {git_commit_title}
-            </a>
-            by {git_commit_author} 于 {git_commit_date}
-          </span>
-        </p>
-      </div>
-
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-        }}
-      >
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          className="h-6 w-6"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          style={{
-            width: 20,
-            height: 20,
-            marginRight: 4,
-          }}
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+      {detail.repo.needGitRepo && (
+        <>
+          <LineItem
+            icon={BranchesOutlined}
+            title={"分支"}
+            children={<span className="detail-data">{detail.gitBranch}</span>}
           />
-        </svg>
-        <p>
-          部署日期:{" "}
-          <span className="detail-data">{detail.humanize_created_at}</span>
-        </p>
-      </div>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-        }}
-      >
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          className="h-6 w-6"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          style={{
-            width: 20,
-            height: 20,
-            marginRight: 4,
-          }}
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+
+          <LineItem
+            icon={PushpinOutlined}
+            title={"提交"}
+            children={
+              <span className="detail-data">
+                <a href={detail.gitCommitWebUrl} target="_blank">
+                  {detail.gitCommitTitle}
+                </a>
+                by {detail.gitCommitAuthor} 于 {detail.gitCommitDate}
+              </span>
+            }
           />
-        </svg>
-        <p>
-          更新日期:{" "}
-          <span className="detail-data">{detail.humanize_updated_at}</span>
-        </p>
-      </div>
+        </>
+      )}
 
       <div>
-        <p>
-          <FireOutlined
-            style={{
-              width: 20,
-              height: 20,
-              marginRight: 4,
-              fontSize: 16,
-            }}
-          />
-          相关配置
-        </p>
-        <details>
+        <LineItem icon={SettingOutlined} title={"容器镜像"} />
+        <div style={{ marginLeft: "1.5rem" }}>
+          {detail.dockerImage?.map((v, idx) => <div key={idx}>{v}</div>)}
+        </div>
+      </div>
+      <LineItem
+        icon={ScheduleOutlined}
+        title={"部署日期"}
+        children={
+          <span className="detail-data">{detail.humanizeCreatedAt}</span>
+        }
+      />
+      <LineItem
+        icon={ScheduleOutlined}
+        title={"更新日期"}
+        children={
+          <span className="detail-data">{detail.humanizeUpdatedAt}</span>
+        }
+      />
+      <div>
+        <LineItem icon={FireOutlined} title={"相关配置"} />
+        <details style={{ marginTop: 3, marginLeft: "1.5rem" }}>
           <summary style={{ cursor: "pointer" }}>展开查看</summary>
           <SyntaxHighlighter
             language="yaml"
@@ -303,7 +161,7 @@ const DetailTab: React.FC<{
               fontSize: 12,
             }}
           >
-            {detail.override_values}
+            {detail.overrideValues}
           </SyntaxHighlighter>
         </details>
       </div>
@@ -323,8 +181,11 @@ const DetailTab: React.FC<{
             icon: <ExclamationCircleOutlined />,
             onOk() {
               setLoading(true);
-              deleteProject(detail.id)
-                .then((res) => {
+              ajax
+                .DELETE("/api/projects/{id}", {
+                  params: { path: { id: detail.id } },
+                })
+                .then(() => {
                   message.success("删除成功");
                   setLoading(false);
                   onDeleted();
@@ -341,16 +202,56 @@ const DetailTab: React.FC<{
         disabled={loading}
         loading={loading}
         type="primary"
-        style={{ marginTop: 20 }}
+        style={{ marginTop: 10, marginBottom: 40 }}
         size="middle"
         danger
       >
         删除项目
       </Button>
-    </div>
+    </Space>
   ) : (
     <Skeleton />
   );
 };
 
 export default memo(DetailTab);
+
+const Label = styled.div`
+  font-weight: 700;
+`;
+
+const LineItem: React.FC<{
+  icon: React.ComponentType<IconBaseProps>;
+  title: string | number;
+  children?: React.ReactNode;
+}> = ({ icon, title, children }) => {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+      }}
+    >
+      <IconWithStyle IconComponent={icon} />
+      <Label>
+        {title}
+        {children && <>: {children}</>}
+      </Label>
+    </div>
+  );
+};
+
+const IconWithStyle: React.FC<{
+  IconComponent: React.ComponentType<IconBaseProps>;
+}> = ({ IconComponent }) => {
+  return (
+    <IconComponent
+      style={{
+        width: 20,
+        height: 20,
+        marginRight: 4,
+        fontSize: 16,
+      }}
+    />
+  );
+};
